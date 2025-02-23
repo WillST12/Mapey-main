@@ -1,0 +1,371 @@
+from symbol import with_item
+from tkinter import *
+from tkinter import messagebox
+import sqlite3
+import heapq
+import networkx as nx
+import matplotlib.pyplot as plt
+import sys
+
+class Grafo:
+    def __init__(self):
+        self.adjacency_list = {}
+
+    def agregar_usuario(self, username):
+        if username not in self.adjacency_list:
+            self.adjacency_list[username] = []
+
+    def agregar_amistad(self, usuario1, usuario2):
+        if usuario1 in self.adjacency_list and usuario2 in self.adjacency_list:
+            self.adjacency_list[usuario1].append(usuario2)
+            self.adjacency_list[usuario2].append(usuario1)
+
+    def obtener_amigos(self, usuario):
+        return self.adjacency_list.get(usuario, [])
+
+def bfs_sugerencias_amigos(grafo, usuario):
+    visitados = set() 
+    cola = [usuario] 
+    sugerencias = []
+
+    while cola:
+        current = cola.pop(0)
+        if current not in visitados:
+            visitados.add(current)
+            amigos = grafo.obtener_amigos(current)
+            for amigo in amigos:
+                if amigo != usuario and amigo not in visitados:
+                    sugerencias.append(amigo)
+                    cola.append(amigo)
+    return list(set(sugerencias))
+
+def dijkstra(grafo, inicio):
+    distancias = {usuario: float('infinity') for usuario in grafo.adjacency_list}
+    distancias[inicio] = 0
+    cola_prioridad = [(0, inicio)]
+
+    while cola_prioridad:
+        distancia_actual, usuario_actual = heapq.heappop(cola_prioridad)
+        
+        if distancia_actual > distancias[usuario_actual]:
+            continue
+
+        for amigo in grafo.obtener_amigos(usuario_actual):
+            nueva_distancia = distancia_actual + 1
+            if nueva_distancia < distancias[amigo]:
+                distancias[amigo] = nueva_distancia
+                heapq.heappush(cola_prioridad, (nueva_distancia, amigo))
+
+    return distancias
+
+root = Tk()
+root.title('FlyNet')
+root.geometry('925x500+300+200')
+root.configure(bg="#fff")
+root.resizable(False, False)
+
+# Conexion a SQLite
+conn = sqlite3.connect('mi_red_social.db')
+cursor = conn.cursor()
+
+# Crear tablas si no existen
+cursor.execute('''CREATE TABLE IF NOT EXISTS Usuarios (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password TEXT NOT NULL)''')
+cursor.execute('''CREATE TABLE IF NOT EXISTS Mensajes (id INTEGER PRIMARY KEY AUTOINCREMENT, remitente TEXT NOT NULL, destinatario TEXT NOT NULL, mensaje TEXT NOT NULL, fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+cursor.execute('''CREATE TABLE IF NOT EXISTS SolicitudesAmistad (id INTEGER PRIMARY KEY AUTOINCREMENT, remitente TEXT NOT NULL, destinatario TEXT NOT NULL, estado TEXT NOT NULL)''')
+conn.commit()
+
+# Cargar imagen y colocación
+img = PhotoImage(file='flynetlogo.png')
+Label(root, image=img, bg='white').place(x=50, y=80)  # Asegura que se mantenga el posicionamiento adecuado
+
+grafo = Grafo()
+
+def cargar_grafo():
+    cursor.execute('SELECT username FROM Usuarios')
+    usuarios = cursor.fetchall()
+    for (usuario,) in usuarios:
+        grafo.agregar_usuario(usuario)
+
+    cursor.execute('SELECT remitente, destinatario FROM Mensajes')
+    mensajes = cursor.fetchall()
+    for remitente, destinatario in mensajes:
+        grafo.agregar_amistad(remitente, destinatario)
+
+cargar_grafo()
+
+def signin():
+    Usuario = user.get()
+    Contra = code.get() 
+
+    try:
+        cursor.execute('SELECT * FROM Usuarios WHERE username=? AND password=?', (Usuario, Contra))
+        usuario = cursor.fetchone()
+
+        if usuario:
+            mostrar_ventana_mensajes(Usuario)
+        else:
+            messagebox.showerror("Invalido", "Usuario o contrasena invalidos")
+    except Exception as e:
+        messagebox.showerror("Error", f"Ocurrio un error: {str(e)}")
+   
+        
+
+
+def mostrar_ventana_mensajes(usuario):
+    screen = Toplevel(root)
+    screen.title("Mensajes")
+    screen.geometry('925x500+300+200')
+    screen.config(bg='white')
+
+
+
+    Label(screen, text='Mensajes', bg='#fff', font=('Calibri (Body)', 30, 'bold')).pack(expand=True)
+
+    mensajes_text = Text(screen, width=70, height=20)
+    mensajes_text.pack(pady=10)
+
+    mensaje_entry = Entry(screen, width=70)
+    mensaje_entry.pack(pady=10)
+
+    user_destinatario = Entry(screen, width=30)
+    user_destinatario.pack(pady=10)
+    user_destinatario.insert(0, 'Nombre del destinatario')
+    
+    def abrir_apartado_grafos():
+        G = nx.Graph()
+
+        for usuario, amigos in grafo.adjacency_list.items():
+            G.add_node(usuario)
+            for amigo in amigos:
+                G.add_edge(usuario, amigo)
+        
+        plt.figure(figsize=(8, 6))
+        nx.draw(G, with_labels=True, node_color="lightblue", node_size=2000, font_weight='bold', edge_color='gray')
+        plt.title('Grafos. Grafica')
+        plt.show()
+        
+    Button(screen, text="Ver Grafo de Amistades", command=abrir_apartado_grafos).pack(pady=10)
+
+    
+    
+    def enviar_mensaje():
+        destinatario = user_destinatario.get()
+        mensaje = mensaje_entry.get()
+
+        if not destinatario or not mensaje:
+            messagebox.showerror("Invalido", "Debes ingresar un destinatario y un mensaje.")
+            return
+
+        try:
+            # Verificar si el destinatario existe
+            cursor.execute('SELECT * FROM Usuarios WHERE username=?', (destinatario,))
+            if cursor.fetchone() is None:
+                messagebox.showerror("Error", "El destinatario no existe.")
+                return
+
+            # Verificar si son amigos
+            if destinatario not in grafo.obtener_amigos(usuario):
+                messagebox.showerror("Error", "No puedes enviar un mensaje a un usuario que no es tu amigo.")
+                return
+
+            # Guardar el mensaje en la base de datos
+            cursor.execute('INSERT INTO Mensajes (remitente, destinatario, mensaje) VALUES (?, ?, ?)', (usuario, destinatario, mensaje))
+            conn.commit()
+            mensaje_entry.delete(0, END)
+            mostrar_mensajes()
+        except Exception as e:
+            messagebox.showerror("Error", f"Ocurrio un error: {str(e)}")
+
+    Button(screen, text="Enviar Mensaje", command=enviar_mensaje).pack(pady=10)
+
+    def mostrar_mensajes():
+        mensajes_text.delete(1.0, END)  # Limpiar el area de texto
+        cursor.execute('SELECT * FROM Mensajes WHERE destinatario=? OR remitente=? ORDER BY fecha ASC', (usuario, usuario))
+        mensajes = cursor.fetchall()
+        for msg in mensajes:
+            mensajes_text.insert(END, f"{msg[1]} -> {msg[2]}: {msg[3]} ({msg[4]})\n")
+
+    # Llamar a mostrar_mensajes automáticamente cuando se abre la ventana
+    mostrar_mensajes()
+
+    # Mostrar sugerencias de amigos
+    def mostrar_sugerencias():
+        sugerencias = bfs_sugerencias_amigos(grafo, usuario)
+        if sugerencias:
+            messagebox.showinfo("Sugerencias de Amigos", f"Puedes agregar a: {', '.join(sugerencias)}")
+        else:
+            messagebox.showinfo("Sugerencias de Amigos", "No hay sugerencias disponibles.")
+
+    Button(screen, text="Mostrar Sugerencias de Amigos", command=mostrar_sugerencias).pack(pady=10)
+
+    # Agregar amigos
+    user_amigo = Entry(screen, width=30)
+    user_amigo.pack(pady=10)
+    user_amigo.insert(0, 'Nombre del amigo a agregar')
+
+    def agregar_amigo():
+        amigo = user_amigo.get()
+
+        if amigo == "":
+            messagebox.showerror("Invalido", "Debes ingresar un nombre de usuario.")
+            return
+        
+        # Verificar si el amigo existe
+        cursor.execute('SELECT * FROM Usuarios WHERE username=?', (amigo,))
+        if cursor.fetchone() is None:
+            messagebox.showerror("Error", "El amigo no existe.")
+            return
+        
+        # Enviar solicitud de amistad
+        cursor.execute('INSERT INTO SolicitudesAmistad (remitente, destinatario, estado) VALUES (?, ?, ?)', (usuario, amigo, 'pendiente'))
+        conn.commit()
+        messagebox.showinfo("Exito", f"Solicitud de amistad enviada a {amigo}.")
+        
+    Button(screen, text="Enviar Solicitud de Amistad", command=agregar_amigo).pack(pady=10)
+
+    # Mostrar solicitudes de amistad
+    def mostrar_solicitudes():
+        cursor.execute('SELECT remitente FROM SolicitudesAmistad WHERE destinatario=? AND estado="pendiente"', (usuario,))
+        solicitudes = cursor.fetchall()
+        if solicitudes:
+            for (remitente,) in solicitudes:
+                mensajes_text.insert(END, f"{remitente} te ha enviado una solicitud de amistad.\n")
+                Button(screen, text=f"Aceptar amistad de {remitente}", command=lambda r=remitente: aceptar_solicitud(r)).pack(pady=5)
+        else:
+            mensajes_text.insert(END, "No tienes solicitudes pendientes.\n")
+
+    def aceptar_solicitud(remitente):
+        grafo.agregar_amistad(remitente, usuario)
+        cursor.execute('DELETE FROM SolicitudesAmistad WHERE remitente=? AND destinatario=?', (remitente, usuario))
+        conn.commit()
+        messagebox.showinfo("Exito", f"{remitente} ahora es tu amigo.")
+        mostrar_mensajes()  # Actualiza la lista de mensajes y solicitudes
+
+    mostrar_solicitudes()  # Cargar solicitudes al iniciar sesion
+    def Buton_Cerrar_todo():
+        salida = messagebox.askokcancel('Confirmacion','Estas seguro de que quieres explotar?')
+        if salida:
+            sys.exit(0)
+        else:
+            print("")
+            
+    Button(screen, text="Cerrar Aplicacion", command=Buton_Cerrar_todo).pack(pady=10)
+    ###De aca para debajo, mucho diseño 
+# Funcion para abrir la ventana de creacion de cuenta
+def crear_ventana_cuenta():
+    ventana_cuenta = Toplevel(root)
+    ventana_cuenta.title('Crear Cuenta')
+    ventana_cuenta.geometry('925x500+300+200')
+    ventana_cuenta.configure(bg="#FFF")
+
+    frame = Frame(ventana_cuenta, width=350, height=390, bg="white")
+    frame.place(x=480, y=50)
+
+    heading = Label(frame, text="Crear cuenta", fg='#57a1f8', bg='white', font=('Microsoft YaHei UI Light', 23, 'bold'))
+    heading.place(x=75, y=5)
+
+    # Entrada para el nombre de usuario
+    user_signup = Entry(frame, width=25, fg="black", border=0, bg="white", font=('Microsoft YaHei UI Light', 11))
+    user_signup.place(x=30, y=80)
+    user_signup.insert(0, 'Nombre De Usuario')
+   
+
+    # Entrada para la contraseña
+    code_signup = Entry(frame, width=25, fg="black", border=0, bg="white", font=('Microsoft YaHei UI Light', 11), show="*")
+    code_signup.place(x=30, y=150)
+    code_signup.insert(0, 'Contrasena')
+   
+
+    # Entrada para confirmar la contraseña
+    Confirmar_Contra_signup = Entry(frame, width=25, fg="black", border=0, bg="white", font=('Microsoft YaHei UI Light', 11), show="*")
+    Confirmar_Contra_signup.place(x=30, y=220)
+    Confirmar_Contra_signup.insert(0, 'Contrasena')
+    
+    def on_focus(event):
+        event.widget.delete(0, 'end')
+
+    # Vinculación de eventos para los campos de entrada
+    user_signup.bind("<FocusIn>", on_focus)
+    code_signup.bind("<FocusIn>", on_focus)
+    Confirmar_Contra_signup.bind("<FocusIn>", on_focus)
+
+    Frame(frame, width=295, height=2, bg="black").place(x=25, y=107)
+    Frame(frame, width=295, height=2, bg="black").place(x=25, y=177)
+    Frame(frame, width=295, height=2, bg="black").place(x=25, y=247)
+
+    def registrar_usuario():
+        nuevo_usuario = user_signup.get()
+        nueva_contra = code_signup.get()
+        confirma_contra = Confirmar_Contra_signup.get()
+
+        if nuevo_usuario and nueva_contra and confirma_contra:
+            if nueva_contra == confirma_contra:  # Verificar si las contraseñas coinciden
+                try:
+                    cursor.execute('INSERT INTO Usuarios (username, password) VALUES (?, ?)', (nuevo_usuario, nueva_contra))
+                    conn.commit()
+                    grafo.agregar_usuario(nuevo_usuario)
+                    messagebox.showinfo("Exito", "Cuenta creada exitosamente.")
+                    ventana_cuenta.destroy()
+                except sqlite3.IntegrityError:
+                    messagebox.showerror("Error", "El nombre de usuario ya existe.")
+                except Exception as e:
+                    messagebox.showerror("Error", f"Ocurrio un error: {str(e)}")
+            else:
+                messagebox.showerror("Error", "Las contrasenas no coinciden.")
+        else:
+            messagebox.showerror("Invalido", "Debes llenar todos los campos.")
+
+    Button(frame, width=39, pady=7, text='Crear cuenta', bg='#57a1f8', fg='white', border=0, command=registrar_usuario).place(x=35, y=280)
+
+    ventana_cuenta.mainloop()
+
+# Widgets para inicio de sesion
+frame = Frame(root, width=350, height=350, bg="white")
+frame.place(x=480, y=70)
+
+heading = Label(frame, text="Inicia Sesion", fg="#57a1f8", bg="white", font=('Microsoft YaHei UI Light', 23, 'bold'))
+heading.place(x=100, y=5)
+
+# Entry de usuario
+def on_enter(e):
+    user.delete(0, 'end')
+
+def on_leave(e):
+    name = user.get()
+    if name == '':
+        user.insert(0, 'Nombre de usuario')
+
+user = Entry(frame, width=25, fg="black", border=0, bg="white", font=('Microsoft YaHei UI Light', 11))
+user.place(x=30, y=80)
+user.insert(0, 'Nombre de usuario')
+user.bind("<FocusIn>", on_enter)
+user.bind("<FocusOut>", on_leave)
+
+Frame(frame, width=295, height=2, bg="black").place(x=25, y=107)
+
+# Entry de contrasena
+def on_enter(e):
+    code.delete(0, 'end')
+
+def on_leave(e):
+    name = code.get()
+    if name == '':
+        code.insert(0, 'Contrasena')
+
+code = Entry(frame, width=25, fg="black", border=0, bg="white", font=('Microsoft YaHei UI Light', 11), show="*")
+code.place(x=30, y=150)
+code.insert(0, 'Contrasena')
+code.bind("<FocusIn>", on_enter)
+code.bind("<FocusOut>", on_leave)
+
+Frame(frame, width=295, height=2, bg="black").place(x=25, y=177)
+
+Button(frame, width=39, pady=7, text="Iniciar Sesion", bg="#57a1f8", fg="white", border=0, command=signin).place(x=35, y=204)
+
+label = Label(frame, text="No tienes una cuenta?", fg="black", bg="white", font=('Microsoft YaHei UI Light', 9))
+label.place(x=75, y=270)
+
+crear_cuenta = Button(frame, width=6, text="Crear", border=0, bg="white", cursor='hand2', fg="#57a1f8", command=crear_ventana_cuenta)
+crear_cuenta.place(x=215, y=270)
+
+root.mainloop()
